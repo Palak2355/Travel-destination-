@@ -1,0 +1,472 @@
+import pandas as pd
+import numpy as np
+
+def generate_synthetic_travel_data(num_rows=5000):
+    """
+    Generates a synthetic dataset for the Travel Recommendation System.
+    The logic ensures a reasonable correlation between features and the target destination.
+    """
+    np.random.seed(42)
+
+    #feature choices
+    ages = np.random.randint(18, 65, num_rows)
+    genders = np.random.choice(['Male', 'Female', 'Other'], num_rows, p=[0.45, 0.45, 0.1])
+    incomes = np.random.choice(['Low', 'Medium', 'High'], num_rows, p=[0.3, 0.4, 0.3])
+    companions = np.random.choice(['Solo', 'Family', 'Group'], num_rows, p=[0.35, 0.4, 0.25])
+    activity_levels = np.random.randint(1, 6, num_rows)
+    budgets = np.random.choice(['Economical', 'Mid-range', 'Luxury'], num_rows, p=[0.3, 0.4, 0.3])
+
+    df = pd.DataFrame({
+        'Age': ages,
+        'Gender': genders,
+        'Income_Level': incomes,
+        'Travel_Companion': companions,
+        'Activity_Level': activity_levels,
+        'Budget': budgets,
+    })
+
+    #what does each destination signify
+    def map_destination(row):
+        #Adventure/Nature shows High activity, younger, solo/group, mid/low budget
+        if (row['Activity_Level'] >= 4) and (row['Age'] < 40) and (row['Budget'] in ['Economical', 'Mid-range']):
+            return 'Adventure/Nature'
+
+        #Relaxation/Beach is Low activity, family/solo, high budget, older
+        elif (row['Activity_Level'] <= 2) and (row['Budget'] in ['Luxury', 'Mid-range']):
+            return 'Relaxation/Beach'
+
+        #party/nightlife high activity and in 20s
+        elif (row['Activity_Level'] >= 4) and (row['Age'] < 35):
+            return 'Party/Nightlife'
+
+        #Cultural/Historical is Mid activity, any companion, varied budget, slightly older on average
+        elif (row['Activity_Level'] in [2, 3]) or (row['Age'] >= 45):
+            return 'Cultural/Historical'
+
+        #fallback
+        return np.random.choice(['Adventure/Nature', 'Relaxation/Beach', 'Cultural/Historical', 'Party/Nightlife'])
+
+    df['Target_Destination'] = df.apply(map_destination, axis=1)
+
+    #to add some noise/overlap
+    num_noise = int(num_rows * 0.05)
+    noise_indices = np.random.choice(df.index, num_noise, replace=False)
+
+    destination_options = ['Adventure/Nature', 'Relaxation/Beach', 'Cultural/Historical', 'Party/Nightlife']
+
+    for i in noise_indices:
+        current_dest = df.loc[i, 'Target_Destination']
+        #any destination that goes against the real/target one
+        new_dest = np.random.choice([d for d in destination_options if d != current_dest])
+        df.loc[i, 'Target_Destination'] = new_dest
+
+    return df
+
+
+data_df = generate_synthetic_travel_data(num_rows=5000)
+data_df.to_csv('travel_data.csv', index=False)
+
+print("Successfully created 'travel_data.csv' with 5000 rows.")
+print("You can now proceed with the analysis notebook (ml_mini_project.ipynb).")
+
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.metrics import accuracy_score, classification_report, f1_score
+from sklearn.pipeline import Pipeline
+from joblib import dump, load
+
+
+from sklearn.linear_model import LogisticRegression
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, AdaBoostClassifier
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.svm import SVC
+import xgboost as xgb
+import shap #(calcs har feature ka cotribution)
+
+
+try:
+    df = pd.read_csv('/content/travel_data.csv')
+except FileNotFoundError:
+    print("Please ensure 'travel_data.csv' is in the current directory.")
+
+    data = {
+        'Age': [30, 45, 22], 'Gender': ['Male', 'Female', 'Other'],
+        'Income_Level': ['Medium', 'High', 'Low'], 'Travel_Companion': ['Solo', 'Family', 'Group'],
+        'Activity_Level': [5, 2, 4], 'Budget': ['Mid-range', 'Luxury', 'Economical'],
+        'Target_Destination': ['Adventure/Nature', 'Relaxation/Beach', 'Party/Nightlife']
+    }
+    df = pd.DataFrame(data)
+#try and except exception handling jst in case , creates a dummy dataset
+print("Data Loaded. First 5 rows:")
+print(df.head())
+print("\nData Info:")
+print(df.info())
+
+
+print(f"\nMissing values check:\n{df.isnull().sum()}")
+
+# performing basic EDA like plotting graphs and analysis and encoding
+sns.set_style("whitegrid")
+plt.figure(figsize=(10, 6))
+
+
+plt.subplot(1, 2, 1)
+sns.countplot(y='Target_Destination', data=df, hue='Target_Destination', palette='viridis', legend=False)
+plt.title('Distribution of Target Destinations')
+plt.xlabel('Count')
+plt.ylabel('Destination Type')
+#even class distribtion
+
+
+#age vs dest
+plt.subplot(1, 2, 2)
+sns.boxplot(x='Target_Destination', y='Age', data=df, hue='Target_Destination', palette='Set3', legend=False)
+plt.title('Age Distribution by Destination Type')
+plt.xticks(rotation=45, ha='right')
+plt.tight_layout()
+plt.show()
+
+#bdget vs dest
+plt.figure(figsize=(8, 6))
+sns.countplot(x='Target_Destination', hue='Budget', data=df, palette='pastel')
+plt.title('Budget vs. Target Destination')
+plt.xticks(rotation=45, ha='right')
+plt.legend(title='Budget')
+plt.show()
+
+#encoding
+le = LabelEncoder()
+df['Destination_Encoded'] = le.fit_transform(df['Target_Destination'])
+X = df.drop(['Target_Destination', 'Destination_Encoded'], axis=1)
+y = df['Destination_Encoded']
+X_encoded = pd.get_dummies(X, columns=['Gender', 'Income_Level', 'Travel_Companion', 'Budget'], drop_first=True)
+
+
+numerical_features = ['Age', 'Activity_Level']
+    #feature scaling
+scaler = StandardScaler()
+X_encoded[numerical_features] = scaler.fit_transform(X_encoded[numerical_features])
+
+X_train, X_test, y_train, y_test = train_test_split(X_encoded, y, test_size=0.2, random_state=42, stratify=y)
+print(f"Shape of Training Data (X): {X_train.shape}")
+print(f"Features used for modeling: {X_train.columns.tolist()}")
+
+models = {
+    "Logistic Regression": LogisticRegression(max_iter=1000, random_state=42),
+    "Decision Tree": DecisionTreeClassifier(random_state=42),
+    "K-Nearest Neighbors": KNeighborsClassifier(),
+    "Support Vector Machine (SVM)": SVC(random_state=42),
+    "Random Forest": RandomForestClassifier(random_state=42),
+    "AdaBoost": AdaBoostClassifier(random_state=42),
+    "Gradient Boosting": GradientBoostingClassifier(random_state=42),
+    "XGBoost": xgb.XGBClassifier(eval_metric='mlogloss', random_state=42)
+}
+
+results = {}
+
+print("\nTraining All Base Models")
+print(f"| {'Model':<25} | Train Acc. | Train F1   |  Acc.  | F1    |")
+
+
+for name, model in models.items():
+    model.fit(X_train, y_train)
+    y_train_pred = model.predict(X_train)
+    y_test_pred = model.predict(X_test)
+    train_accuracy = accuracy_score(y_train, y_train_pred)
+    train_f1 = f1_score(y_train, y_train_pred, average='weighted')
+    test_accuracy = accuracy_score(y_test, y_test_pred)
+    test_f1 = f1_score(y_test, y_test_pred, average='weighted')
+
+    results[name] = {
+        'Train Accuracy': train_accuracy,
+        'Train F1-Score': train_f1,
+        'Accuracy': test_accuracy,
+        'F1-Score': test_f1
+    }
+
+    print(f"| {name:<25} | {train_accuracy:10.4f} | {train_f1:10.4f} | {test_accuracy:10.4f} | {test_f1:10.4f} |")
+
+
+
+
+rf_pipe = Pipeline([
+    #hyperparameter tuning for random forest to maximize metrics
+    ('scaler', StandardScaler()),
+    ('randomforestclassifier', RandomForestClassifier(random_state=42))
+])
+
+rf_param_grid = {
+    'randomforestclassifier__n_estimators': [100, 200, 300],
+    'randomforestclassifier__max_depth': [5, 10, 15],
+    'randomforestclassifier__min_samples_split': [2, 5],
+}
+    #GridSearchCV with param_grid, 5-fold validation
+rf_grid_search = GridSearchCV(
+    rf_pipe,
+    rf_param_grid,
+    cv=5,
+    scoring='f1_weighted',
+)
+
+rf_grid_search.fit(X_train, y_train)
+best_rf_model = rf_grid_search.best_estimator_
+y_pred_tuned = best_rf_model.predict(X_test)
+f1_tuned = f1_score(y_test, y_pred_tuned, average='weighted')
+accuracy_tuned = accuracy_score(y_test, y_pred_tuned)
+print("Results of Tuned Random Forest Model")
+print(f"Best Parameters Found: {rf_grid_search.best_params_}")
+print(f"| Tuned Random Forest is  Accuracy: {accuracy_tuned:.4f} | F1-Score: {f1_tuned:.4f} |")
+results['Tuned Random Forest'] = {'Accuracy': accuracy_tuned, 'F1-Score': f1_tuned}
+
+
+print("Feature Importance (PFI)")
+#pfi measres how the perfoc=mance changes as featre is shuffled calculating how mch each feature acconts for / contibutes
+
+from sklearn.inspection import permutation_importance
+from sklearn.metrics import roc_curve, auc
+FINAL_MODEL = best_rf_model
+perm_importance = permutation_importance(FINAL_MODEL, X_test, y_test,
+                                         n_repeats=10, random_state=42,
+                                         scoring='f1_weighted', n_jobs=-1)
+pfi_df = pd.DataFrame({
+    'Feature': X_test.columns,
+    'Importance_Mean': perm_importance.importances_mean,
+    'Importance_Std': perm_importance.importances_std
+}).sort_values(by='Importance_Mean', ascending=False)
+
+print(" Permutation Feature Importance (PFI)")
+print("Features ranked by impact on F1-Score when shuffled:")
+print(pfi_df.head(10))
+
+plt.figure(figsize=(10, 6))
+sns.barplot(x='Importance_Mean', y='Feature', data=pfi_df.head(10), hue='Feature', palette='plasma', legend=False)
+plt.title('Top Features by Permutation Importance (PFI)')
+plt.xlabel('Mean Importance Score (F1-Score Drop)')
+plt.tight_layout()
+plt.show()
+
+
+df_results = pd.DataFrame(results).T.sort_values(by='F1-Score', ascending=True)
+print("\n Final Comparative Model Analysis")
+print(df_results)
+
+
+dump(FINAL_MODEL, 'best_model.joblib')
+dump(scaler, 'scaler.joblib')
+#saves feature in exact same order
+X_cols = X_train.columns.tolist()
+dump(X_cols, 'feature_columns.joblib')
+dump(le, 'label_encoder.joblib')
+print("Ready for Deployment!")
+
+
+!pip install gradio
+
+import gradio as gr
+import pandas as pd
+import numpy as np
+from joblib import load
+import os
+
+# Load model assets
+try:
+    model = load('best_rf_model.joblib')
+    scaler = load('scaler.joblib')
+    feature_columns = load('feature_columns.joblib')
+    label_encoder = load('label_encoder.joblib')
+except FileNotFoundError:
+    print("FATAL ERROR: Model assets not found!")
+    print("Ensure all .joblib files are in the current working directory.")
+    exit()
+
+# Prediction function
+def predict_destination(age, gender, income_level, travel_companion, activity_level, budget):
+    input_data = pd.DataFrame({
+        'Age': [age],
+        'Activity_Level': [activity_level],
+        'Gender': [gender],
+        'Income_Level': [income_level],
+        'Travel_Companion': [travel_companion],
+        'Budget': [budget]
+    })
+
+    numerical_features = ['Age', 'Activity_Level']
+    input_encoded = pd.get_dummies(
+        input_data,
+        columns=['Gender', 'Income_Level', 'Travel_Companion', 'Budget'],
+        drop_first=True
+    )
+
+    input_encoded[numerical_features] = scaler.transform(input_encoded[numerical_features])
+    final_input = pd.DataFrame(0, index=[0], columns=feature_columns)
+    for col in input_encoded.columns:
+        if col in final_input.columns:
+            final_input[col] = input_encoded[col].iloc[0]
+
+    try:
+        prediction_encoded = model.predict(final_input)[0]
+        prediction_label = label_encoder.inverse_transform([prediction_encoded])[0]
+        probabilities = model.predict_proba(final_input)[0]
+        confidence = probabilities[prediction_encoded] * 100
+
+        emoji_map = {
+            "Adventure/Nature": "🏔️ Adventure/Nature",
+            "Relaxation/Beach": "🏖️ Relaxation/Beach",
+            "Cultural/Historical": "🏛️ Cultural/Historical",
+            "Party/Nightlife": "🎉 Party/Nightlife"
+        }
+
+        # Animated output box ✨
+        result_text = f"""
+        <div style='
+            animation: fadeSlideIn 1s ease-out;
+            background-color: #fff4e6;
+            padding: 25px;
+            border-radius: 14px;
+            border-left: 6px solid #d97706;
+            box-shadow: 0 4px 12px rgba(165, 88, 28, 0.25);
+        '>
+            <h3 style='font-family: Helvetica, sans-serif; color: #b45309;'>Recommended Destination:</h3>
+            <h1 style='font-family: Helvetica, sans-serif; color: #92400e;'>{emoji_map.get(prediction_label, '🌍 Unknown')}</h1>
+            <p style='font-size: 18px; font-family: Helvetica, sans-serif;'>Model Confidence: <strong>{confidence:.2f}%</strong></p>
+        </div>
+        """
+        return result_text
+
+    except Exception as e:
+        return f"<p style='color: red;'>Prediction Error: {e}</p>"
+
+# Inputs
+age_slider = gr.Slider(minimum=18, maximum=75, value=30, label="1. Age")
+activity_slider = gr.Slider(minimum=1, maximum=5, step=1, value=4, label="2. Preferred Activity Level (1=Relaxing, 5=Intense)")
+gender_dropdown = gr.Dropdown(choices=["Male", "Female", "Other"], label="3. Gender", value="Male")
+income_dropdown = gr.Dropdown(choices=["Low", "Medium", "High"], label="4. Income Level", value="Medium")
+companion_dropdown = gr.Dropdown(choices=["Solo", "Family", "Group"], label="5. Travel Companion", value="Solo")
+budget_dropdown = gr.Dropdown(choices=["Economical", "Mid-range", "Luxury"], label="6. Budget", value="Mid-range")
+
+inputs = [
+    age_slider,
+    gender_dropdown,
+    income_dropdown,
+    companion_dropdown,
+    activity_slider,
+    budget_dropdown
+]
+
+# Custom Title & Subtitle
+custom_title = """
+<div style='
+    text-align: center;
+    font-family: Helvetica, sans-serif;
+    color: #b45309;
+    font-size: 42px;
+    font-weight: bold;
+    letter-spacing: 1px;
+    margin-bottom: 6px;
+'>
+    Personalized Travel Destination Recommender
+</div>
+<div style='
+    text-align: center;
+    font-family: Helvetica, sans-serif;
+    color: #92400e;
+    font-size: 16px;
+    font-style: italic;
+    text-decoration: underline;
+    margin-bottom: 25px;
+'>
+    Powered by Tuned Random Forest Classifier
+</div>
+"""
+
+custom_description = """
+<div style='
+    background-color: #fef6e4;
+    padding: 20px;
+    border-radius: 12px;
+    box-shadow: 0px 3px 10px rgba(120, 66, 18, 0.15);
+    font-family: Helvetica, sans-serif;
+    font-size: 17px;
+    color: #3f2e1e;
+    line-height: 1.6;
+'>
+    <p>✨ Tell us a bit about your preferences and we'll match you with the perfect travel vibe — <b>Adventure</b>, <b>Relaxation</b>, <b>Cultural</b>, or <b>Party</b>!</p>
+</div>
+"""
+
+# Interface setup
+iface = gr.Interface(
+    fn=predict_destination,
+    inputs=inputs,
+    outputs=gr.HTML(label="Destination Recommendation"),
+    title=custom_title,
+    description=custom_description,
+    live=False,
+    flagging_mode='never'
+)
+
+# Aesthetic theme + animation CSS
+iface.css = """
+@keyframes fadeSlideIn {
+    from {
+        opacity: 0;
+        transform: translateY(20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+body {
+    background-color: #fdf6ec !important;
+    font-family: Helvetica, sans-serif !important;
+}
+
+.gradio-container {
+    background: linear-gradient(180deg, #fdf6ec 0%, #fffaf3 100%);
+    border-radius: 20px;
+    padding: 20px !important;
+}
+
+label, .gradio-input label, .gradio-output label {
+    color: #7c3e11 !important;
+    font-weight: 600 !important;
+}
+
+input, select, textarea, .gradio-slider input {
+    background-color: #fffaf2 !important;
+    border: 1.5px solid #eab308 !important;
+    color: #5b3410 !important;
+    border-radius: 10px !important;
+    box-shadow: 0 3px 6px rgba(160, 82, 45, 0.15) !important;
+}
+
+button {
+    background-color: #d97706 !important;
+    color: #fff !important;
+    font-family: Helvetica, sans-serif !important;
+    border-radius: 10px !important;
+    font-size: 16px !important;
+    font-weight: bold !important;
+    box-shadow: 0 4px 10px rgba(139, 69, 19, 0.25) !important;
+    transition: all 0.25s ease-in-out !important;
+}
+
+button:hover {
+    background-color: #b45309 !important;
+    transform: scale(1.05);
+}
+"""
+
+# Launch
+if __name__ == "__main__":
+    iface.launch(inline=True, share=True)
+
+
